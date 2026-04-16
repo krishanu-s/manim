@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Tuple
 
 import moderngl
@@ -159,6 +162,104 @@ def restrict_domain(
 #     mobj.data["rgba"] = real_to_rgba(arr)
 
 
+# Note the two classes below are identical, but are separately named for programmer clarity
+@dataclass
+class ComplexHeatMap:
+    """A function f: U -> C, where U is a subset of C."""
+
+    points: np.ndarray  # Array of shape (N, 2) containing the points in the domain
+    vals: np.ndarray  # Array of shape (N, 2) containing the values
+
+    @classmethod
+    def new(
+        cls,
+        xlims: Tuple[float, float],
+        ylims: Tuple[float, float],
+        resolution: Tuple[int, int],
+    ) -> ComplexHeatMap:
+        """Initializes a new ComplexHeatMap with the identity function."""
+        xmin, xmax = xlims
+        ymin, ymax = ylims
+        nx, ny = resolution
+        re, im = np.meshgrid(np.linspace(ymin, ymax, ny), np.linspace(xmin, xmax, nx))
+        points = np.stack((np.ravel(re), np.ravel(im)), axis=-1)
+        vals = np.stack((np.ravel(re), np.ravel(im)), axis=-1)
+        return ComplexHeatMap(points, vals)
+
+    def copy(self) -> ComplexHeatMap:
+        """Copies the object."""
+        return ComplexHeatMap(self.points, self.vals)
+
+    def set_vals(self, vals: np.ndarray):
+        """Sets the function values manually from an input array."""
+        self.vals = vals
+
+    def set_f_and_domain(
+        self,
+        f: Callable[[np.ndarray], np.ndarray] | None = None,
+        domain_condition: Callable[[np.ndarray], bool] | None = None,
+    ):
+        """Sets the function values according to a computable function and a domain condition.
+        By default, the identity function is used and the entire rectilinear region is the domain."""
+        if f is None:
+            f = lambda x: x
+
+        self.vals = f(self.points)
+
+        if domain_condition:
+            mask = np.invert(
+                np.apply_along_axis(domain_condition, axis=-1, arr=self.points.copy())
+            )
+            if np.any(mask):
+                self.vals[mask] = INFINITY
+
+    def to_rgba(self) -> np.ndarray:
+        """Converts the function values to a RGBA heatmap."""
+        return cx_to_rgba(self.vals)
+
+
+@dataclass
+class RealHeatMap:
+    """A function f: U -> R, where U is a subset of R^2."""
+
+    points: np.ndarray  # Array of shape (N, 2) containing the points in the domain
+    vals: np.ndarray  # Array of shape (N,) containing the values
+
+    @classmethod
+    def new(
+        xlims: Tuple[float, float],
+        ylims: Tuple[float, float],
+        resolution: Tuple[int, int],
+    ) -> RealHeatMap:
+        xmin, xmax = xlims
+        ymin, ymax = ylims
+        nx, ny = resolution
+        re, im = np.meshgrid(np.linspace(ymin, ymax, ny), np.linspace(xmin, xmax, nx))
+        points = np.stack((np.ravel(re), np.ravel(im)), axis=-1)
+        vals = np.stack(np.zeros((nx * ny,)), axis=-1)
+        return RealHeatMap(points, vals)
+
+    def copy(self) -> RealHeatMap:
+        return RealHeatMap(self.points, self.vals)
+
+    def restrict_domain(self, domain_condition: Callable[[np.ndarray], bool]):
+        mask = np.invert(
+            np.apply_along_axis(domain_condition, axis=-1, arr=self.points.copy())
+        )
+        if np.any(mask):
+            self.vals[mask] = INFINITY
+
+    def set_vals(self, vals: np.ndarray):
+        """Set output values manually"""
+        self.vals = vals
+
+    def set_vals_by_f(self, f: Callable[[np.ndarray], np.ndarray]):
+        self.vals = f(self.points)
+
+    def to_rgba(self) -> np.ndarray:
+        return real_to_rgba(self.vals)
+
+
 class HeatMapMixin(Surface):
     """
     An enrichment of Surface where individual vertices are given their own colors, according to
@@ -175,23 +276,35 @@ class HeatMapMixin(Surface):
         ]
     )
     pointlike_data_keys = ["point", "d_normal_point"]
-    arr_vals: np.ndarray
+    heatmap: ComplexHeatMap | RealHeatMap
 
     # TODO Find a way to animate changing the domain of the current array values: whether that's
     # extending or contracting. Probably can do this when the domain is expanding or contracting
     # from a single point.
+    #
+    # TODO Combine the two below methods into one?
 
-    def update_array_cx(self, arr_vals: np.ndarray):
-        """Input is an array of shape (N, 2)"""
-        self.arr_vals = arr_vals
-        new_rgba = cx_to_rgba(self.arr_vals)
-        self.data["rgba"] = new_rgba
+    def init_heatmap(self):
+        self.heatmap = ComplexHeatMap.new(self.u_range, self.v_range, self.resolution)
+        self.update_rgba()
 
-    def update_array_real(self, arr_vals: np.ndarray):
-        """Input is an array of shape (N,)"""
-        self.arr_vals = arr_vals
-        new_rgba = real_to_rgba(self.arr_vals)
-        self.data["rgba"] = new_rgba
+    def set_f_and_domain(
+        self,
+        f: Callable[[np.ndarray], np.ndarray] | None = None,
+        domain_condition: Callable[[np.ndarray], bool] | None = None,
+    ):
+        """Sets the function values according to a computable function and a domain condition."""
+        self.heatmap.set_f_and_domain(f, domain_condition)
+        self.update_rgba()
+
+    def set_vals(self, vals: np.ndarray):
+        """Sets the function values manually from an input array."""
+        self.heatmap.set_vals(vals)
+        self.update_rgba()
+
+    def update_rgba(self):
+        """Updates colors."""
+        self.data["rgba"] = self.heatmap.to_rgba()
 
 
 class PlaneHeatMap(HeatMapMixin, Plane):
