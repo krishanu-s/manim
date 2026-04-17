@@ -123,6 +123,14 @@ def cx_inv(arr: np.ndarray) -> np.ndarray:
     return np.apply_along_axis(_cx_inv, axis=-1, arr=arr)
 
 
+def _cx_exp(z: np.ndarray) -> np.ndarray:
+    return np.exp(z[0]) * np.array([np.cos(z[1]), np.sin(z[1])])
+
+
+def cx_exp(arr: np.ndarray) -> np.ndarray:
+    return np.apply_along_axis(_cx_exp, axis=-1, arr=arr)
+
+
 def restrict_domain(
     domain_condition: Callable[[np.ndarray], bool],
     domain_points: np.ndarray,
@@ -182,7 +190,7 @@ class ComplexHeatMap:
         xmin, xmax = xlims
         ymin, ymax = ylims
         nx, ny = resolution
-        re, im = np.meshgrid(np.linspace(ymin, ymax, ny), np.linspace(xmin, xmax, nx))
+        im, re = np.meshgrid(np.linspace(ymin, ymax, ny), np.linspace(xmin, xmax, nx))
         points = np.stack((np.ravel(re), np.ravel(im)), axis=-1)
         vals = np.stack((np.ravel(re), np.ravel(im)), axis=-1)
         return ComplexHeatMap(points, vals, lambda z: True)
