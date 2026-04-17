@@ -169,6 +169,7 @@ class ComplexHeatMap:
 
     points: np.ndarray  # Array of shape (N, 2) containing the points in the domain
     vals: np.ndarray  # Array of shape (N, 2) containing the values
+    domain_condition: Callable[[np.ndarray], bool]
 
     @classmethod
     def new(
@@ -184,38 +185,41 @@ class ComplexHeatMap:
         re, im = np.meshgrid(np.linspace(ymin, ymax, ny), np.linspace(xmin, xmax, nx))
         points = np.stack((np.ravel(re), np.ravel(im)), axis=-1)
         vals = np.stack((np.ravel(re), np.ravel(im)), axis=-1)
-        return ComplexHeatMap(points, vals)
+        return ComplexHeatMap(points, vals, lambda z: True)
 
     def copy(self) -> ComplexHeatMap:
         """Copies the object."""
-        return ComplexHeatMap(self.points, self.vals)
+        return ComplexHeatMap(self.points, self.vals, self.domain_condition)
 
     def set_vals(self, vals: np.ndarray):
         """Sets the function values manually from an input array."""
         self.vals = vals
 
-    def set_f_and_domain(
-        self,
-        f: Callable[[np.ndarray], np.ndarray] | None = None,
-        domain_condition: Callable[[np.ndarray], bool] | None = None,
-    ):
-        """Sets the function values according to a computable function and a domain condition.
-        By default, the identity function is used and the entire rectilinear region is the domain."""
+    def set_f(self, f: Callable[[np.ndarray], np.ndarray] | None = None):
+        """Sets the function values according to a computable function.
+        By default, the identity function is used."""
         if f is None:
             f = lambda x: x
 
         self.vals = f(self.points)
 
-        if domain_condition:
-            mask = np.invert(
-                np.apply_along_axis(domain_condition, axis=-1, arr=self.points.copy())
-            )
-            if np.any(mask):
-                self.vals[mask] = INFINITY
+    def set_domain(self, domain_condition: Callable[[np.ndarray], bool] | None):
+        """Sets the domain of the function."""
+        if domain_condition is None:
+            self.domain_condition = lambda z: True
+        else:
+            self.domain_condition = domain_condition
 
-    def to_rgba(self) -> np.ndarray:
-        """Converts the function values to a RGBA heatmap."""
-        return cx_to_rgba(self.vals)
+    def get_rgba(self) -> np.ndarray:
+        """Get RGBA heatmap"""
+        mask = np.invert(
+            np.apply_along_axis(self.domain_condition, axis=-1, arr=self.points.copy())
+        )
+        vals = self.vals.copy()
+        if np.any(mask):
+            vals[mask] = INFINITY
+
+        return cx_to_rgba(vals)
 
 
 @dataclass
@@ -282,29 +286,52 @@ class HeatMapMixin(Surface):
     # extending or contracting. Probably can do this when the domain is expanding or contracting
     # from a single point.
     #
-    # TODO Combine the two below methods into one?
+    # TODO Make some method which stores the fixed function and all its values underneath, and reveals
+    # only the array values on a given domain
 
+    @Mobject.affects_data
     def init_heatmap(self):
         self.heatmap = ComplexHeatMap.new(self.u_range, self.v_range, self.resolution)
         self.update_rgba()
+        return self
 
-    def set_f_and_domain(
-        self,
-        f: Callable[[np.ndarray], np.ndarray] | None = None,
-        domain_condition: Callable[[np.ndarray], bool] | None = None,
-    ):
-        """Sets the function values according to a computable function and a domain condition."""
-        self.heatmap.set_f_and_domain(f, domain_condition)
+    @Mobject.affects_data
+    def set_f(self, f: Callable[[np.ndarray], np.ndarray] | None):
+        """Sets the function values according to a computable function."""
+        self.heatmap.set_f(f)
         self.update_rgba()
+        return self
 
+    @Mobject.affects_data
+    def set_domain(self, domain_condition: Callable[[np.ndarray], bool] | None):
+        self.heatmap.set_domain(domain_condition)
+        self.update_rgba()
+        return self
+
+    @Mobject.affects_data
     def set_vals(self, vals: np.ndarray):
         """Sets the function values manually from an input array."""
         self.heatmap.set_vals(vals)
         self.update_rgba()
+        return self
 
+    @Mobject.affects_data
     def update_rgba(self):
-        """Updates colors."""
-        self.data["rgba"] = self.heatmap.to_rgba()
+        """Updates colors of the MObject."""
+        self.data["rgba"] = self.heatmap.get_rgba()
+        # if domain_condition:
+        #     mask = np.invert(
+        #         np.apply_along_axis(
+        #             domain_condition, axis=-1, arr=self.heatmap.points.copy()
+        #         )
+        #     )
+        #     vals = self.heatmap.vals.copy()
+        #     if np.any(mask):
+        #         vals[mask] = INFINITY
+        #     # TODO Make this work for real case
+        #     self.data["rgba"] = cx_to_rgba(vals)
+        # else:
+        #     self.data["rgba"] = cx_to_rgba(self.heatmap.vals)
 
 
 class PlaneHeatMap(HeatMapMixin, Plane):
