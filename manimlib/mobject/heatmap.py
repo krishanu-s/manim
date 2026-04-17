@@ -19,26 +19,16 @@ if TYPE_CHECKING:
     from manimlib.camera.camera import Camera
     from manimlib.typing import ManimColor, Self, Vect3, Vect3Array
 
+# The complex number at infinity
+CX_INFINITY = np.array([np.inf, 0])
+REAL_INFINITY = np.inf
+TOLERANCE = 1e-6  # To avoid division by zero
 
-class Plane(Surface):
-    def __init__(
-        self,
-        u_range: Tuple[float, float],
-        v_range: Tuple[float, float],
-        resolution: Tuple[int, int] = (101, 51),
-        **kwargs,
-    ):
-        super().__init__(
-            u_range=u_range, v_range=v_range, resolution=resolution, **kwargs
-        )
-        s = self.data["point"].shape
-        v = np.array([0, 0, 1])
-        self.data["d_normal_point"] = self.data["point"] + self.normal_nudge * (
-            np.zeros(s) + v[None, ...]
-        )
 
-    # def uv_func(self, u: float, v: float) -> np.ndarray:
-    #     return (u, v, 0.0)
+def magnitude_to_opacity(arr: np.ndarray) -> np.ndarray:
+    """Maps a nonnegative real number to an opacity level.
+    By default, 0 -> 0 and infty -> 1."""
+    return np.exp(-0.2 * np.pow(arr + TOLERANCE, -1))
 
 
 # For arrays of shape (*, 2), which represent complex-valued functions
@@ -78,14 +68,11 @@ def phase_to_rgb(phase: np.ndarray) -> np.ndarray:
 
 
 def cx_to_rgba(cx_array: np.ndarray):
+    """Maps an array of complex numbers (shape (*, 2)) to an RGBA array (shape (*, 4))."""
     cx_polar_array = cx_to_polar(cx_array)
     rgb = phase_to_rgb(cx_polar_array[..., 1])
-    opacity = np.exp(-cx_polar_array[..., :1])
+    opacity = magnitude_to_opacity(cx_polar_array[..., :1])
     return np.concat((rgb, opacity), axis=-1)
-
-
-# Assumed for all intents and purposes to be at infinity
-INFINITY = np.array([1e5, 0])
 
 
 # For nonnegative real heatmaps -- red color. TODO Figure out a color scheme for negative
@@ -114,7 +101,9 @@ def cx_mult(arr_1: np.ndarray, arr_2: np.ndarray) -> np.ndarray:
 def _cx_inv(z: np.ndarray) -> np.ndarray:
     r = np.linalg.norm(z)
     if r == 0:
-        return INFINITY
+        return CX_INFINITY
+    elif r == np.inf:
+        return np.array([0.0, 0.0])
     else:
         return np.array([z[0], -z[1]]) / (r**2)
 
@@ -131,46 +120,6 @@ def cx_exp(arr: np.ndarray) -> np.ndarray:
     return np.apply_along_axis(_cx_exp, axis=-1, arr=arr)
 
 
-def restrict_domain(
-    domain_condition: Callable[[np.ndarray], bool],
-    domain_points: np.ndarray,
-    cx_array: np.ndarray,
-) -> np.ndarray:
-    domain_mask = np.invert(
-        np.apply_along_axis(domain_condition, axis=-1, arr=domain_points.copy())
-    )
-    new_arr = cx_array.copy()
-    if np.any(domain_mask):
-        new_arr[domain_mask] = INFINITY
-    return new_arr
-
-
-# TODO How to constrict the domain to a disc? We need an interface for specifying
-#
-
-# TODO Make this work for other surfaces, e.g. a flat circle or a region of the plane.
-# This might require turning it into a "mixin", or perhaps just a function which can be applied to any Surface object.
-#
-# To do a subset of an already-implemented surface (such as a subdomain of the plane), just set the
-# uncolored pixels to RGBA values (*, *, *, 0). This is hit in the current settings by setting the magnitude to infinity.
-#
-#
-# TODO Write custom "heatmap" shader functions
-#
-# TODO Test an evolving planar sine wave, for example.
-#
-# TODO Write convenience functions which convert the relevant arrays to the correct shape.
-# def set_rgba_from_cx_array(mobj: Surface, arr: np.ndarray):
-#     """Sets the colors of individual vertices of Surface according to a given array of shape (N, 2)."""
-#     mobj.data["rgba"] = cx_to_rgba(arr)
-
-
-# def set_rgba_from_real_array(mobj: Surface, arr: np.ndarray):
-#     """Sets the colors of individual vertices of Surface according to a given array of shape (N,)."""
-#     mobj.data["rgba"] = real_to_rgba(arr)
-
-
-# Note the two classes below are identical, but are separately named for programmer clarity
 @dataclass
 class ComplexHeatMap:
     """A function f: U -> C, where U is a subset of C."""
@@ -218,16 +167,17 @@ class ComplexHeatMap:
         else:
             self.domain_condition = domain_condition
 
-    def get_rgba(self) -> np.ndarray:
-        """Get RGBA heatmap"""
+    def get_rgba(self, background_opacity: float = 0.0) -> np.ndarray:
+        """Get RGBA heatmap, with points outside of the domain faded out to the specified opacity"""
         mask = np.invert(
             np.apply_along_axis(self.domain_condition, axis=-1, arr=self.points.copy())
         )
-        vals = self.vals.copy()
+        fn_vals = self.vals.copy()
+        rgba_vals = cx_to_rgba(fn_vals)
         if np.any(mask):
-            vals[mask] = INFINITY
+            rgba_vals[:, 3][mask] *= background_opacity
 
-        return cx_to_rgba(vals)
+        return rgba_vals
 
 
 @dataclass
@@ -236,6 +186,7 @@ class RealHeatMap:
 
     points: np.ndarray  # Array of shape (N, 2) containing the points in the domain
     vals: np.ndarray  # Array of shape (N,) containing the values
+    domain_condition: Callable[[np.ndarray], bool]
 
     @classmethod
     def new(
@@ -243,33 +194,47 @@ class RealHeatMap:
         ylims: Tuple[float, float],
         resolution: Tuple[int, int],
     ) -> RealHeatMap:
+        """Initializes a new RealHeatMap with the zero function."""
         xmin, xmax = xlims
         ymin, ymax = ylims
         nx, ny = resolution
         re, im = np.meshgrid(np.linspace(ymin, ymax, ny), np.linspace(xmin, xmax, nx))
         points = np.stack((np.ravel(re), np.ravel(im)), axis=-1)
         vals = np.stack(np.zeros((nx * ny,)), axis=-1)
-        return RealHeatMap(points, vals)
+        return RealHeatMap(points, vals, lambda z: True)
 
     def copy(self) -> RealHeatMap:
-        return RealHeatMap(self.points, self.vals)
-
-    def restrict_domain(self, domain_condition: Callable[[np.ndarray], bool]):
-        mask = np.invert(
-            np.apply_along_axis(domain_condition, axis=-1, arr=self.points.copy())
-        )
-        if np.any(mask):
-            self.vals[mask] = INFINITY
+        return RealHeatMap(self.points, self.vals, self.domain_condition)
 
     def set_vals(self, vals: np.ndarray):
-        """Set output values manually"""
+        """Sets the function values manually from an input array."""
         self.vals = vals
 
-    def set_vals_by_f(self, f: Callable[[np.ndarray], np.ndarray]):
+    def set_f(self, f: Callable[[np.ndarray], np.ndarray] | None = None):
+        """Sets the function values according to a computable function.
+        By default, the zero function is used."""
+        if f is None:
+            f = lambda x: 0
+
         self.vals = f(self.points)
 
-    def to_rgba(self) -> np.ndarray:
-        return real_to_rgba(self.vals)
+    def set_domain(self, domain_condition: Callable[[np.ndarray], bool] | None):
+        """Sets the domain of the function."""
+        if domain_condition is None:
+            self.domain_condition = lambda z: True
+        else:
+            self.domain_condition = domain_condition
+
+    def get_rgba(self) -> np.ndarray:
+        """Get RGBA heatmap"""
+        mask = np.invert(
+            np.apply_along_axis(self.domain_condition, axis=-1, arr=self.points.copy())
+        )
+        vals = self.vals.copy()
+        if np.any(mask):
+            vals[mask] = REAL_INFINITY
+
+        return real_to_rgba(vals)
 
 
 class HeatMapMixin(Surface):
@@ -289,16 +254,18 @@ class HeatMapMixin(Surface):
     )
     pointlike_data_keys = ["point", "d_normal_point"]
     heatmap: ComplexHeatMap | RealHeatMap
+    background_opacity: float = 0.0  # Opacity of points outside of the specified domain
 
-    # TODO Find a way to animate changing the domain of the current array values: whether that's
-    # extending or contracting. Probably can do this when the domain is expanding or contracting
-    # from a single point.
-    #
-    # TODO Make some method which stores the fixed function and all its values underneath, and reveals
-    # only the array values on a given domain
+    @Mobject.affects_data
+    def set_background_opacity(self, x: float):
+        """Sets the baseline opacity of the heatmap."""
+        self.background_opacity = x
+        self.update_rgba()
+        return self
 
     @Mobject.affects_data
     def init_heatmap(self):
+        # TODO Make this work for a real heatmap as well
         self.heatmap = ComplexHeatMap.new(self.u_range, self.v_range, self.resolution)
         self.update_rgba()
         return self
@@ -326,20 +293,25 @@ class HeatMapMixin(Surface):
     @Mobject.affects_data
     def update_rgba(self):
         """Updates colors of the MObject."""
-        self.data["rgba"] = self.heatmap.get_rgba()
-        # if domain_condition:
-        #     mask = np.invert(
-        #         np.apply_along_axis(
-        #             domain_condition, axis=-1, arr=self.heatmap.points.copy()
-        #         )
-        #     )
-        #     vals = self.heatmap.vals.copy()
-        #     if np.any(mask):
-        #         vals[mask] = INFINITY
-        #     # TODO Make this work for real case
-        #     self.data["rgba"] = cx_to_rgba(vals)
-        # else:
-        #     self.data["rgba"] = cx_to_rgba(self.heatmap.vals)
+        self.data["rgba"] = self.heatmap.get_rgba(self.background_opacity)
+
+
+class Plane(Surface):
+    def __init__(
+        self,
+        u_range: Tuple[float, float],
+        v_range: Tuple[float, float],
+        resolution: Tuple[int, int] = (101, 51),
+        **kwargs,
+    ):
+        super().__init__(
+            u_range=u_range, v_range=v_range, resolution=resolution, **kwargs
+        )
+        s = self.data["point"].shape
+        v = np.array([0, 0, 1])
+        self.data["d_normal_point"] = self.data["point"] + self.normal_nudge * (
+            np.zeros(s) + v[None, ...]
+        )
 
 
 class PlaneHeatMap(HeatMapMixin, Plane):
