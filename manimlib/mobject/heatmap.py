@@ -25,13 +25,19 @@ REAL_INFINITY = np.inf
 TOLERANCE = 1e-6  # To avoid division by zero
 
 
+def sigmoid(x: float):
+    return 1 / (1 + np.exp(-x))
+
+
 def magnitude_to_opacity(arr: np.ndarray) -> np.ndarray:
     """Maps a nonnegative real number to an opacity level.
-    By default, 0 -> 0 and infty -> 1."""
-    return np.exp(-0.2 * np.pow(arr + TOLERANCE, -1))
+    By default, 0 -> 0, 1 -> 0.5, and infty -> 1."""
+    return np.pow(1 + np.pow(arr + TOLERANCE, -0.5), -1)
+    # return np.exp(-0.01 * np.pow(arr + TOLERANCE, -1))
 
 
 # For arrays of shape (*, 2), which represent complex-valued functions
+# TODO Make this more efficient by using np.complex
 def cx_to_polar(cx_array: np.ndarray) -> np.ndarray:
     r = np.linalg.norm(cx_array, axis=-1)
     phase = np.atan2(cx_array[..., 1], cx_array[..., 0])
@@ -127,6 +133,7 @@ class ComplexHeatMap:
     points: np.ndarray  # Array of shape (N, 2) containing the points in the domain
     vals: np.ndarray  # Array of shape (N, 2) containing the values
     domain_condition: Callable[[np.ndarray], bool]
+    rgba_vals: np.ndarray  # Cached RGBA values, to avoid re-computation
 
     @classmethod
     def new(
@@ -142,15 +149,18 @@ class ComplexHeatMap:
         im, re = np.meshgrid(np.linspace(ymin, ymax, ny), np.linspace(xmin, xmax, nx))
         points = np.stack((np.ravel(re), np.ravel(im)), axis=-1)
         vals = np.stack((np.ravel(re), np.ravel(im)), axis=-1)
-        return ComplexHeatMap(points, vals, lambda z: True)
+        return ComplexHeatMap(points, vals, lambda z: True, cx_to_rgba(vals))
 
     def copy(self) -> ComplexHeatMap:
         """Copies the object."""
-        return ComplexHeatMap(self.points, self.vals, self.domain_condition)
+        return ComplexHeatMap(
+            self.points, self.vals, self.domain_condition, self.rgba_vals
+        )
 
     def set_vals(self, vals: np.ndarray):
         """Sets the function values manually from an input array."""
         self.vals = vals
+        self.rgba_vals = cx_to_rgba(self.vals)
 
     def set_f(self, f: Callable[[np.ndarray], np.ndarray] | None = None):
         """Sets the function values according to a computable function.
@@ -159,6 +169,7 @@ class ComplexHeatMap:
             f = lambda x: x
 
         self.vals = f(self.points)
+        self.rgba_vals = cx_to_rgba(self.vals)
 
     def set_domain(self, domain_condition: Callable[[np.ndarray], bool] | None):
         """Sets the domain of the function."""
@@ -167,13 +178,19 @@ class ComplexHeatMap:
         else:
             self.domain_condition = domain_condition
 
-    def get_rgba(self, background_opacity: float = 0.0) -> np.ndarray:
+    def get_rgba(
+        self, background_opacity: float = 0.0, use_cached_values: boolean = False
+    ) -> np.ndarray:
         """Get RGBA heatmap, with points outside of the domain faded out to the specified opacity"""
+        if use_cached_values:
+            rgba_vals = self.rgba_vals.copy()
+        else:
+            rgba_vals = cx_to_rgba(self.vals)
+            self.rgba_vals = rgba_vals.copy()
+
         mask = np.invert(
             np.apply_along_axis(self.domain_condition, axis=-1, arr=self.points.copy())
         )
-        fn_vals = self.vals.copy()
-        rgba_vals = cx_to_rgba(fn_vals)
         if np.any(mask):
             rgba_vals[:, 3][mask] *= background_opacity
 
@@ -260,12 +277,12 @@ class HeatMapMixin(Surface):
     def set_background_opacity(self, x: float):
         """Sets the baseline opacity of the heatmap."""
         self.background_opacity = x
-        self.update_rgba()
+        self.update_rgba(use_cached_rgba_values=True)
         return self
 
     @Mobject.affects_data
     def init_heatmap(self):
-        # TODO Make this work for a real heatmap as well
+        """Initialized the underlying heatmap of function values"""
         self.heatmap = ComplexHeatMap.new(self.u_range, self.v_range, self.resolution)
         self.update_rgba()
         return self
@@ -279,8 +296,9 @@ class HeatMapMixin(Surface):
 
     @Mobject.affects_data
     def set_domain(self, domain_condition: Callable[[np.ndarray], bool] | None):
+        """Sets the domain of the function"""
         self.heatmap.set_domain(domain_condition)
-        self.update_rgba()
+        self.update_rgba(use_cached_rgba_values=True)
         return self
 
     @Mobject.affects_data
@@ -291,9 +309,12 @@ class HeatMapMixin(Surface):
         return self
 
     @Mobject.affects_data
-    def update_rgba(self):
-        """Updates colors of the MObject."""
-        self.data["rgba"] = self.heatmap.get_rgba(self.background_opacity)
+    def update_rgba(self, use_cached_rgba_values: boolean = False):
+        """Updates colors of the MObject. Cached RGBA values are used if the underlying
+        function was not changed when this was called."""
+        self.data["rgba"] = self.heatmap.get_rgba(
+            self.background_opacity, use_cached_rgba_values
+        )
 
 
 class Plane(Surface):
