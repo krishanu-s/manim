@@ -36,17 +36,6 @@ def magnitude_to_opacity(arr: np.ndarray) -> np.ndarray:
     # return np.exp(-0.01 * np.pow(arr + TOLERANCE, -1))
 
 
-# For arrays of shape (*, 2), which represent complex-valued functions
-# TODO Make this more efficient by using np.complex
-def cx_to_polar(cx_array: np.ndarray) -> np.ndarray:
-    r = np.linalg.norm(cx_array, axis=-1)
-    phase = np.atan2(cx_array[..., 1], cx_array[..., 0])
-    phase *= 1 / TAU
-    phase = phase % 1
-    phase *= TAU
-    return np.stack((r, phase), axis=-1)
-
-
 def phase_to_rgb(phase: np.ndarray) -> np.ndarray:
     phase *= 1 / TAU
     phase = phase % 1.0
@@ -75,7 +64,6 @@ def phase_to_rgb(phase: np.ndarray) -> np.ndarray:
 
 def cx_to_rgba(cx_array: np.ndarray):
     """Maps an array of complex numbers (shape (*, 2)) to an RGBA array (shape (*, 4))."""
-    # cx_polar_array = cx_to_polar(cx_array)
     rgb = phase_to_rgb(np.angle(cx_array))
     opacity = magnitude_to_opacity(np.expand_dims(np.abs(cx_array), axis=-1))
     return np.concat((rgb, opacity), axis=-1)
