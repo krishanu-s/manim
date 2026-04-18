@@ -40,6 +40,7 @@ from manimlib.mobject.coordinate_systems import *
 from manimlib.mobject.frame import *
 from manimlib.mobject.functions import *
 from manimlib.mobject.geometry import *
+from manimlib.mobject.heatmap import *
 from manimlib.mobject.interactive import *
 from manimlib.mobject.matrix import *
 from manimlib.mobject.mobject import *
