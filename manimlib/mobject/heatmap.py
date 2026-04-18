@@ -63,7 +63,7 @@ def phase_to_rgb(phase: np.ndarray) -> np.ndarray:
 
 
 def cx_to_rgba(cx_array: np.ndarray):
-    """Maps an array of complex numbers (shape (*, 2)) to an RGBA array (shape (*, 4))."""
+    """Maps an array of complex numbers (shape (*,)) to an RGBA array (shape (*, 4))."""
     rgb = phase_to_rgb(np.angle(cx_array))
     opacity = magnitude_to_opacity(np.expand_dims(np.abs(cx_array), axis=-1))
     return np.concat((rgb, opacity), axis=-1)
@@ -75,43 +75,6 @@ def real_to_rgba(arr: np.ndarray):
         (np.ones_like(arr), np.zeros_like(arr), np.zeros_like(arr), np.exp(-arr)),
         axis=-1,
     )
-
-
-# Defining operations on complex numbers, in array form
-def cx_add(arr_1: np.ndarray, arr_2: np.ndarray) -> np.ndarray:
-    return arr_1 + arr_2
-
-
-def _cx_mult(z: np.ndarray) -> np.ndarray:
-    return np.array([z[0] * z[2] - z[1] * z[3], z[0] * z[3] + z[1] * z[2]])
-
-
-def cx_mult(arr_1: np.ndarray, arr_2: np.ndarray) -> np.ndarray:
-    return np.apply_along_axis(
-        func1d=_cx_mult, axis=-1, arr=np.concat((arr_1, arr_2), axis=-1)
-    )
-
-
-def _cx_inv(z: np.ndarray) -> np.ndarray:
-    r = np.linalg.norm(z)
-    if r == 0:
-        return CX_INFINITY
-    elif r == np.inf:
-        return np.array([0.0, 0.0])
-    else:
-        return np.array([z[0], -z[1]]) / (r**2)
-
-
-def cx_inv(arr: np.ndarray) -> np.ndarray:
-    return np.apply_along_axis(_cx_inv, axis=-1, arr=arr)
-
-
-def _cx_exp(z: np.ndarray) -> np.ndarray:
-    return np.exp(z[0]) * np.array([np.cos(z[1]), np.sin(z[1])])
-
-
-def cx_exp(arr: np.ndarray) -> np.ndarray:
-    return np.apply_along_axis(_cx_exp, axis=-1, arr=arr)
 
 
 @dataclass
