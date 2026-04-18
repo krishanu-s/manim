@@ -75,9 +75,9 @@ def phase_to_rgb(phase: np.ndarray) -> np.ndarray:
 
 def cx_to_rgba(cx_array: np.ndarray):
     """Maps an array of complex numbers (shape (*, 2)) to an RGBA array (shape (*, 4))."""
-    cx_polar_array = cx_to_polar(cx_array)
-    rgb = phase_to_rgb(cx_polar_array[..., 1])
-    opacity = magnitude_to_opacity(cx_polar_array[..., :1])
+    # cx_polar_array = cx_to_polar(cx_array)
+    rgb = phase_to_rgb(np.angle(cx_array))
+    opacity = magnitude_to_opacity(np.expand_dims(np.abs(cx_array), axis=-1))
     return np.concat((rgb, opacity), axis=-1)
 
 
@@ -128,10 +128,12 @@ def cx_exp(arr: np.ndarray) -> np.ndarray:
 
 @dataclass
 class ComplexHeatMap:
-    """A function f: U -> C, where U is a subset of C."""
+    """A function f: U -> C, where U is a subset of R^2."""
 
-    points: np.ndarray  # Array of shape (N, 2) containing the points in the domain
-    vals: np.ndarray  # Array of shape (N, 2) containing the values
+    points: (
+        np.ndarray
+    )  # Array of shape (N,) containing the (complex) points in the domain
+    vals: np.ndarray  # Array of shape (N,) containing the (complex) function values
     domain_condition: Callable[[np.ndarray], bool]
     rgba_vals: np.ndarray  # Cached RGBA values, to avoid re-computation
 
@@ -147,8 +149,17 @@ class ComplexHeatMap:
         ymin, ymax = ylims
         nx, ny = resolution
         im, re = np.meshgrid(np.linspace(ymin, ymax, ny), np.linspace(xmin, xmax, nx))
-        points = np.stack((np.ravel(re), np.ravel(im)), axis=-1)
-        vals = np.stack((np.ravel(re), np.ravel(im)), axis=-1)
+        re = np.ravel(re)
+        im = np.ravel(im)
+
+        points = np.empty((nx * ny,), dtype=np.complex128)
+        points.real = re
+        points.imag = im
+
+        vals = np.empty((nx * ny,), dtype=np.complex128)
+        vals.real = re
+        vals.imag = im
+
         return ComplexHeatMap(points, vals, lambda z: True, cx_to_rgba(vals))
 
     def copy(self) -> ComplexHeatMap:
@@ -166,7 +177,7 @@ class ComplexHeatMap:
         """Sets the function values according to a computable function.
         By default, the identity function is used."""
         if f is None:
-            f = lambda x: x
+            f = lambda z: z.copy()
 
         self.vals = f(self.points)
         self.rgba_vals = cx_to_rgba(self.vals)
