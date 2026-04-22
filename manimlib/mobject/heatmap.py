@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING, Callable, Tuple
 
 import moderngl
@@ -29,14 +30,19 @@ def sigmoid(x: float):
     return 1 / (1 + np.exp(-x))
 
 
+# TODO Set multiple possible allowed functions and allow the user
+# to toggle as a global setting within a scene.
 def magnitude_to_opacity(arr: np.ndarray) -> np.ndarray:
     """Maps a nonnegative real number to an opacity level.
     By default, 0 -> 0, 1 -> 0.5, and infty -> 1."""
+    # return np.ones_like(arr)
     return np.pow(1 + np.pow(arr + TOLERANCE, -0.5), -1)
     # return np.exp(-0.01 * np.pow(arr + TOLERANCE, -1))
 
 
-def phase_to_rgb(phase: np.ndarray) -> np.ndarray:
+def phase_to_rgb(phase: np.ndarray | float) -> np.ndarray:
+    if isinstance(phase, float):
+        phase = np.array(phase)
     phase *= 1 / TAU
     phase = phase % 1.0
     mask_small = phase < 1 / 3
@@ -69,10 +75,18 @@ def cx_to_rgba(cx_array: np.ndarray):
     return np.concat((rgb, opacity), axis=-1)
 
 
-# For nonnegative real heatmaps -- red color. TODO Figure out a color scheme for negative
+# For real heatmaps.
 def real_to_rgba(arr: np.ndarray):
+    """Maps an array of real numbers (shape (*,)) to an RGBA array (shape (*, 4)).
+    Sends the (nonnegative) magnitude to the opacity, and sets the color to red/blue
+    based on whether the real number is positive/negative."""
     return np.stack(
-        (np.ones_like(arr), np.zeros_like(arr), np.zeros_like(arr), np.exp(-arr)),
+        (
+            np.ones_like(arr > 0),
+            np.zeros_like(arr),
+            np.ones_like(arr < 0),
+            magnitude_to_opacity(np.abs(arr)),
+        ),
         axis=-1,
     )
 
@@ -122,7 +136,7 @@ class ComplexHeatMap:
     def set_vals(self, vals: np.ndarray):
         """Sets the function values manually from an input array."""
         self.vals = vals
-        self.rgba_vals = cx_to_rgba(self.vals)
+        self.rgba_vals = cx_to_rgba(vals)
 
     def set_f(self, f: Callable[[np.ndarray], np.ndarray] | None = None):
         """Sets the function values according to a computable function.
@@ -159,16 +173,36 @@ class ComplexHeatMap:
         return rgba_vals
 
 
+def default_rgba_real(arr: np.ndarray):
+    """Maps an array of real numbers (shape (*,)) to an RGBA array (shape (*, 4)).
+    Sends the (nonnegative) magnitude to the opacity, and sets the color to red/blue
+    based on whether the real number is positive/negative."""
+    return np.stack(
+        (
+            (arr > 0).astype(float), # Red for positive positions
+            np.zeros_like(arr),
+            (arr < 0).astype(float), # Blue for negative positions
+            np.pow(1 + np.pow(np.abs(arr) + TOLERANCE, -0.5), -1),
+        ),
+        axis=-1,
+    )
+
+
 @dataclass
 class RealHeatMap:
     """A function f: U -> R, where U is a subset of R^2."""
 
     points: np.ndarray  # Array of shape (N, 2) containing the points in the domain
     vals: np.ndarray  # Array of shape (N,) containing the values
-    domain_condition: Callable[[np.ndarray], bool]
+    domain_condition: Callable[[np.ndarray], bool]  # Defines the function domain
+    rgba_vals: np.ndarray  # Cached RGBA values, to avoid re-computation
+    rgba_fn: Callable[[float], np.ndarray] = (
+        default_rgba_real  # Function which defines RGBA outputs
+    )
 
     @classmethod
     def new(
+        cls,
         xlims: Tuple[float, float],
         ylims: Tuple[float, float],
         resolution: Tuple[int, int],
@@ -180,14 +214,19 @@ class RealHeatMap:
         re, im = np.meshgrid(np.linspace(ymin, ymax, ny), np.linspace(xmin, xmax, nx))
         points = np.stack((np.ravel(re), np.ravel(im)), axis=-1)
         vals = np.stack(np.zeros((nx * ny,)), axis=-1)
-        return RealHeatMap(points, vals, lambda z: True)
+        return RealHeatMap(
+            points, vals, lambda z: True, default_rgba_real(vals), default_rgba_real
+        )
 
     def copy(self) -> RealHeatMap:
-        return RealHeatMap(self.points, self.vals, self.domain_condition)
+        return RealHeatMap(
+            self.points, self.vals, self.domain_condition, self.rgba_vals
+        )
 
     def set_vals(self, vals: np.ndarray):
         """Sets the function values manually from an input array."""
         self.vals = vals
+        self.rgba_vals = self.rgba_fn(vals)
 
     def set_f(self, f: Callable[[np.ndarray], np.ndarray] | None = None):
         """Sets the function values according to a computable function.
@@ -196,6 +235,7 @@ class RealHeatMap:
             f = lambda x: 0
 
         self.vals = f(self.points)
+        self.rgba_vals = self.rgba_fn(self.vals)
 
     def set_domain(self, domain_condition: Callable[[np.ndarray], bool] | None):
         """Sets the domain of the function."""
@@ -204,16 +244,33 @@ class RealHeatMap:
         else:
             self.domain_condition = domain_condition
 
-    def get_rgba(self) -> np.ndarray:
-        """Get RGBA heatmap"""
+    def set_rgba_fn(f: Callable[[np.ndarray], np.ndarray]):
+        """Set the color function for this heatmap"""
+        self.rgba_fn = f
+        self.rgba_vals = self.rgba_fn(self.vals)
+
+    def get_rgba(
+        self, background_opacity: float = 0.0, use_cached_values: boolean = False
+    ) -> np.ndarray:
+        """Get RGBA heatmap, with points outside of the domain faded out to the specified opacity"""
+        if use_cached_values:
+            rgba_vals = self.rgba_vals.copy()
+        else:
+            rgba_vals = self.rgba_fn(self.vals)
+            self.rgba_vals = rgba_vals.copy()
+
         mask = np.invert(
             np.apply_along_axis(self.domain_condition, axis=-1, arr=self.points.copy())
         )
-        vals = self.vals.copy()
         if np.any(mask):
-            vals[mask] = REAL_INFINITY
+            rgba_vals[:, 3][mask] *= background_opacity
 
-        return real_to_rgba(vals)
+        return rgba_vals
+
+
+class HeatMapType(Enum):
+    COMPLEX = 1
+    REAL = 2
 
 
 class HeatMapMixin(Surface):
@@ -243,9 +300,14 @@ class HeatMapMixin(Surface):
         return self
 
     @Mobject.affects_data
-    def init_heatmap(self):
+    def init_heatmap(self, type: HeatMapType = HeatMapType.COMPLEX):
         """Initialized the underlying heatmap of function values"""
-        self.heatmap = ComplexHeatMap.new(self.u_range, self.v_range, self.resolution)
+        if type == HeatMapType.COMPLEX:
+            self.heatmap = ComplexHeatMap.new(
+                self.u_range, self.v_range, self.resolution
+            )
+        elif type == HeatMapType.REAL:
+            self.heatmap = RealHeatMap.new(self.u_range, self.v_range, self.resolution)
         self.update_rgba()
         return self
 
@@ -255,6 +317,13 @@ class HeatMapMixin(Surface):
         self.heatmap.set_f(f)
         self.update_rgba()
         return self
+
+    @Mobject.affects_data
+    def transform_f(self, new_f: Callable[[np.ndarray], np.ndarray]):
+        """Linearly interpolates between the current function values and the new function values.
+        Outputs an animation"""
+        # TODO
+        pass
 
     @Mobject.affects_data
     def set_domain(self, domain_condition: Callable[[np.ndarray], bool] | None):
@@ -267,6 +336,13 @@ class HeatMapMixin(Surface):
     def set_vals(self, vals: np.ndarray):
         """Sets the function values manually from an input array."""
         self.heatmap.set_vals(vals)
+        self.update_rgba()
+        return self
+
+    @Mobject.affects_data
+    def set_rgba_fn(f: Callable[[np.ndarray], np.ndarray]):
+        """Set the color function for this heatmap"""
+        self.heatmap.set_rgba_fn(f)
         self.update_rgba()
         return self
 
